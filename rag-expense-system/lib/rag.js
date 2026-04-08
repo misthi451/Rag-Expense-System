@@ -1,30 +1,14 @@
-import fs from 'fs';
-import path from 'path';
 import { generateAnswer } from './gemini';
 import { weightedSearch } from './search';
-
-const DATA_PATH = path.join(process.cwd(), 'data', 'expenses.json');
-
-/**
- * Load all expenses from the local JSON store
- */
-function getLocalExpenses() {
-  try {
-    if (!fs.existsSync(DATA_PATH)) return [];
-    const raw = fs.readFileSync(DATA_PATH, 'utf-8');
-    return JSON.parse(raw);
-  } catch (error) {
-    console.error('Error reading local data:', error);
-    return [];
-  }
-}
+import { getExpenses } from './store';
 
 /**
  * Hybrid search using weighted keywords
  */
-export async function searchDocuments(query, limit = 10) {
+export async function searchDocuments(query, limit = 20) {
   try {
-    const expenses = getLocalExpenses();
+    const expenses = getExpenses();
+    console.log(`Total expenses in memory: ${expenses.length}`);
     const results = weightedSearch(expenses, query);
     return results.slice(0, limit);
   } catch (error) {
@@ -38,28 +22,35 @@ export async function searchDocuments(query, limit = 10) {
  */
 export async function ragQuery(question) {
   try {
-    console.log(`\n🔍 Hybrid RAG Query for: "${question}"`);
+    console.log(`\n🔍 RAG Query: "${question}"`);
 
-    // Step 1: Search for relevant documents (Hybrid Keyword Search - Reliable for 168k)
-    // ✅ Updated limit to 20 as requested for broader data access
-    const documents = await searchDocuments(question, 20);
-    
-    if (documents.length === 0) {
+    const expenses = getExpenses();
+    console.log(`Expenses in memory: ${expenses.length}`);
+
+    if (expenses.length === 0) {
       return {
-        answer: 'I could not find any expense records matching your query. Please try searching for a category (e.g., "Food", "Travel") or a specific description.',
+        answer: 'No expense data found. Please upload your JSON file first.',
         sources: 0,
         documents: [],
       };
     }
 
-    // Step 2: Build context from retrieved documents (Enriched Context)
+    const documents = await searchDocuments(question, 20);
+
+    if (documents.length === 0) {
+      return {
+        answer: 'No matching records found. Try searching by category (e.g., "Food", "Travel") or description.',
+        sources: 0,
+        documents: [],
+      };
+    }
+
     const context = documents
       .map(doc => `- ${doc.description || 'Expense'} (Category: ${doc.category}, Amount: ₹${doc.amount}, Date: ${doc.date}, Member: ${doc.member || 'N/A'}, Ref: ${doc.ref_number || 'N/A'})`)
       .join('\n');
 
-    console.log(`📊 Found ${documents.length} relevant records for context.`);
+    console.log(`📊 Found ${documents.length} relevant records.`);
 
-    // Step 3: Generate answer using Gemini (AI) with context
     const answer = await generateAnswer(context, question);
 
     return {
@@ -71,22 +62,19 @@ export async function ragQuery(question) {
         amount: d.amount,
         date: d.date,
         member: d.member,
-        ref_number: d.ref_number
+        ref_number: d.ref_number,
       })),
     };
   } catch (error) {
     console.error('RAG query error:', error);
-    throw new Error(`Hybrid RAG query failed: ${error.message}`);
+    throw new Error(`RAG query failed: ${error.message}`);
   }
 }
 
-/**
- * Stats and filtering (now working on the local JSON file)
- */
 export async function getStats() {
   try {
-    const data = getLocalExpenses();
-    
+    const data = getExpenses();
+
     const stats = {
       totalExpenses: data.length,
       totalAmount: data.reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0),
@@ -105,7 +93,6 @@ export async function getStats() {
 
     return stats;
   } catch (error) {
-    console.error('Stats error:', error);
     throw new Error(`Failed to get stats: ${error.message}`);
   }
 }
