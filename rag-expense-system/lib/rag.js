@@ -1,98 +1,97 @@
+import { createClient } from '@supabase/supabase-js';
 import { generateAnswer } from './gemini';
-import { weightedSearch } from './search';
-import { getExpenses } from './store';
 
-/**
- * Hybrid search using weighted keywords
- */
-export async function searchDocuments(query, limit = 20) {
-  try {
-    const expenses = getExpenses();
-    console.log(`Total expenses in memory: ${expenses.length}`);
-    const results = weightedSearch(expenses, query);
-    return results.slice(0, limit);
-  } catch (error) {
-    console.error('Search error:', error);
-    throw new Error(`Keyword search failed: ${error.message}`);
-  }
-}
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
-/**
- * Main RAG query function
- */
 export async function ragQuery(question) {
   try {
     console.log(`\n🔍 RAG Query: "${question}"`);
 
-    const expenses = getExpenses();
-    console.log(`Expenses in memory: ${expenses.length}`);
+    // Extract keywords from question
+    const stopWords = new Set(['how', 'much', 'did', 'i', 'spend', 'on', 'the', 'for', 'what', 'was', 'my', 'all', 'show', 'me', 'to', 'from', 'of', 'via']);
+    const keywords = question.toLowerCase()
+      .split(/\s+/)
+      .filter(w => w.length > 2 && !stopWords.has(w));
 
-    if (expenses.length === 0) {
-      return {
-        answer: 'No expense data found. Please upload your JSON file first.',
-        sources: 0,
-        documents: [],
-      };
+    console.log('Keywords:', keywords);
+
+    let documents = [];
+
+    // Search by category
+    for (const keyword of keywords) {
+      const { data, error } = await supabase
+        .from('documents')
+        .select('*')
+        .ilike('category', `%${keyword}%`)
+        .limit(10);
+
+      if (!error && data) documents.push(...data);
     }
 
-    const documents = await searchDocuments(question, 20);
+    // Search by content/description
+    for (const keyword of keywords) {
+      const { data, error } = await supabase
+        .from('documents')
+        .select('*')
+        .ilike('content', `%${keyword}%`)
+        .limit(10);
+
+      if (!error && data) documents.push(...data);
+    }
+
+    // Search by member name
+    for (const keyword of keywords) {
+      const { data, error } = await supabase
+        .from('documents')
+        .select('*')
+        .ilike('member', `%${keyword}%`)
+        .limit(10);
+
+      if (!error && data) documents.push(...data);
+    }
+
+    // Remove duplicates
+    const seen = new Set();
+    documents = documents.filter(doc => {
+      if (seen.has(doc.id)) return false;
+      seen.add(doc.id);
+      return true;
+    });
+
+    console.log(`📊 Found ${documents.length} records`);
 
     if (documents.length === 0) {
       return {
-        answer: 'No matching records found. Try searching by category (e.g., "Food", "Travel") or description.',
+        answer: 'No matching records found. Try searching by category (e.g., "Food", "Travel") or a person\'s name.',
         sources: 0,
         documents: [],
       };
     }
 
+    // Build context
     const context = documents
-      .map(doc => `- ${doc.description || 'Expense'} (Category: ${doc.category}, Amount: ₹${doc.amount}, Date: ${doc.date}, Member: ${doc.member || 'N/A'}, Ref: ${doc.ref_number || 'N/A'})`)
+      .slice(0, 20)
+      .map(doc => `- ${doc.content} (Category: ${doc.category}, Amount: ₹${doc.amount}, Date: ${doc.date}, Member: ${doc.member || 'N/A'})`)
       .join('\n');
-
-    console.log(`📊 Found ${documents.length} relevant records.`);
 
     const answer = await generateAnswer(context, question);
 
     return {
       answer,
       sources: documents.length,
-      documents: documents.map(d => ({
-        content: d.description,
+      documents: documents.slice(0, 20).map(d => ({
+        content: d.content,
         category: d.category,
         amount: d.amount,
         date: d.date,
         member: d.member,
-        ref_number: d.ref_number,
       })),
     };
   } catch (error) {
     console.error('RAG query error:', error);
     throw new Error(`RAG query failed: ${error.message}`);
-  }
-}
-
-export async function getStats() {
-  try {
-    const data = getExpenses();
-
-    const stats = {
-      totalExpenses: data.length,
-      totalAmount: data.reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0),
-      byCategory: {},
-      byMember: {},
-    };
-
-    data.forEach(d => {
-      if (d.category) {
-        stats.byCategory[d.category] = (stats.byCategory[d.category] || 0) + (parseFloat(d.amount) || 0);
-      }
-      if (d.member) {
-        stats.byMember[d.member] = (stats.byMember[d.member] || 0) + (parseFloat(d.amount) || 0);
-      }
-    });
-
-    return stats;
-  } catch (error) {
-    throw new Error(`Failed to get stats: ${error.message}`);
   }
 }

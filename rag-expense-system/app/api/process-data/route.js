@@ -1,4 +1,9 @@
-import { saveExpenses, clearExpenses, getExpenses } from '@/lib/store';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 export async function POST(req) {
   try {
@@ -14,15 +19,36 @@ export async function POST(req) {
     console.log(`Processing ${expenseData.length} records...`);
     const startTime = Date.now();
 
-    const total = saveExpenses(expenseData);
+    // Format data for Supabase documents table
+    const records = expenseData.map(exp => ({
+      content: exp.description || exp.content || 'Expense',
+      category: exp.category || null,
+      amount: parseFloat(exp.amount) || 0,
+      date: exp.date || null,
+      member: exp.member || null,
+    }));
+
+    // Insert in batches of 500
+    const BATCH_SIZE = 500;
+    let totalInserted = 0;
+
+    for (let i = 0; i < records.length; i += BATCH_SIZE) {
+      const batch = records.slice(i, i + BATCH_SIZE);
+      const { error } = await supabase.from('documents').insert(batch);
+      if (error) {
+        console.error('Insert error:', error.message);
+      } else {
+        totalInserted += batch.length;
+      }
+    }
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-    console.log(`✅ Saved! Total in memory: ${total}`);
+    console.log(`✅ Inserted ${totalInserted} records in ${duration}s`);
 
     return Response.json({
       success: true,
-      processed: expenseData.length,
-      total,
+      processed: totalInserted,
+      total: totalInserted,
       time: `${duration}s`,
     });
   } catch (error) {
@@ -33,7 +59,8 @@ export async function POST(req) {
 
 export async function DELETE() {
   try {
-    clearExpenses();
+    const { error } = await supabase.from('documents').delete().neq('id', 0);
+    if (error) throw error;
     return Response.json({ success: true, message: 'All data cleared.' });
   } catch (error) {
     return Response.json({ success: false, error: error.message }, { status: 500 });
